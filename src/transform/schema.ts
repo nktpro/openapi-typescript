@@ -1,4 +1,4 @@
-import type { GlobalContext } from "../types.js";
+import type { Discriminator, GlobalContext } from "../types.js";
 import {
   prepareComment,
   nodeType,
@@ -89,8 +89,24 @@ export function transformAnyOf(anyOf: any, options: TransformSchemaObjOptions): 
 }
 
 /** transform oneOf */
-export function transformOneOf(oneOf: any, options: TransformSchemaObjOptions): string {
-  return tsUnionOf(oneOf.map((value: any) => transformSchemaObj(value, options)));
+export function transformOneOf(oneOf: any, options: TransformSchemaObjOptions, discriminator?: Discriminator): string {
+  const discriminatorMap = discriminator
+    ? new Map(Object.entries(discriminator.mapping).map(([k, v]) => [v, k]))
+    : new Map();
+
+  const types = oneOf.map((value: any) => {
+    const ref = nodeType(value) === "ref" ? value.$ref : undefined;
+
+    const out = transformSchemaObj(value, options);
+
+    if (discriminator && ref !== undefined && discriminatorMap.has(ref)) {
+      return `${out} & { ${discriminator.propertyName}: ${JSON.stringify(discriminatorMap.get(ref))} }`;
+    }
+
+    return out;
+  });
+
+  return tsUnionOf(types);
 }
 
 /** Convert schema object to TypeScript */
@@ -193,7 +209,7 @@ export function transformSchemaObj(node: any, options: TransformSchemaObjOptions
           // append allOf/anyOf/oneOf first
           ...(node.allOf ? (node.allOf as any[]).map((node) => transformSchemaObj(node, options)) : []),
           ...(node.anyOf ? [transformAnyOf(node.anyOf, options)] : []),
-          ...(node.oneOf ? [transformOneOf(node.oneOf, options)] : []),
+          ...(node.oneOf ? [transformOneOf(node.oneOf, options, node.discriminator)] : []),
           ...(properties ? [`{\n${properties}\n}`] : []), // then properties (line breaks are important!)
           ...missingRequired, // add required that are missing from properties
           ...(additionalProperties ? [additionalProperties] : []), // then additional properties

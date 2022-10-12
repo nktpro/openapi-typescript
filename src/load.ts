@@ -216,44 +216,67 @@ export default async function load(
   });
   await Promise.all(refPromises);
 
+  function transformRef(v: string, subschemaURL: string) {
+    const { url, parts } = parseRef(v);
+    // scenario 1: resolve all external URLs so long as they don’t point back to root schema
+    if (url && new URL(url).href !== options.rootURL.href) {
+      const relativeURL =
+        isFile(new URL(url)) && isFile(options.rootURL)
+          ? path.posix.relative(path.posix.dirname(options.rootURL.href), url)
+          : url;
+      return `external["${relativeURL}"]["${parts.join('"]["')}"]`; // export external ref
+    }
+    // scenario 2: treat all $refs in external schemas as external
+    if (!url && subschemaURL !== options.rootURL.href) {
+      const relativeURL =
+        isFile(new URL(subschemaURL)) && isFile(options.rootURL)
+          ? path.posix.relative(path.posix.dirname(options.rootURL.href), subschemaURL)
+          : subschemaURL;
+      return `external["${relativeURL}"]["${parts.join('"]["')}"]`; // export external ref
+    }
+
+    // References to properties of schemas like `#/components/schemas/Pet/properties/name`
+    // requires the components to be wrapped in a `properties` object. But to keep
+    // backwards compatibility we should instead just remove the `properties` part.
+    // For us to recognize the `properties` part it simply has to be the second last.
+    if (parts[parts.length - 2] === "properties") {
+      parts.splice(parts.length - 2, 1);
+    }
+
+    // scenario 3: transform all $refs pointing back to root schema
+    const [base, ...rest] = parts;
+
+    return `${base}["${rest.join('"]["')}"]`; // transform other $refs to the root schema (including external refs that point back to the root schema)
+  }
+
   // transform $refs once, at the root schema, after all have been scanned & downloaded (much easier to do here when we have the context)
   if (schemaID === options.rootURL.href) {
     for (const subschemaURL of Object.keys(schemas)) {
       // transform $refs in schema
       schemas[subschemaURL] = JSON.parse(JSON.stringify(schemas[subschemaURL]), (k, v) => {
+        if (
+          k === "discriminator" &&
+          typeof v === "object" &&
+          v !== null &&
+          "mapping" in v &&
+          typeof v.mapping === "object" &&
+          v.mapping !== null
+        ) {
+          return {
+            ...v,
+            mapping: Object.fromEntries(
+              Object.entries(v.mapping).map(([mappingKey, mappingValue]) => {
+                if (typeof mappingValue === "string" && mappingValue.includes("#")) {
+                  return [mappingKey, transformRef(mappingValue, subschemaURL)];
+                }
+                return [mappingKey, mappingValue];
+              })
+            ),
+          };
+        }
         if (k !== "$ref" || typeof v !== "string") return v;
         if (!v.includes("#")) return v; // already transformed; skip
-
-        const { url, parts } = parseRef(v);
-        // scenario 1: resolve all external URLs so long as they don’t point back to root schema
-        if (url && new URL(url).href !== options.rootURL.href) {
-          const relativeURL =
-            isFile(new URL(url)) && isFile(options.rootURL)
-              ? path.posix.relative(path.posix.dirname(options.rootURL.href), url)
-              : url;
-          return `external["${relativeURL}"]["${parts.join('"]["')}"]`; // export external ref
-        }
-        // scenario 2: treat all $refs in external schemas as external
-        if (!url && subschemaURL !== options.rootURL.href) {
-          const relativeURL =
-            isFile(new URL(subschemaURL)) && isFile(options.rootURL)
-              ? path.posix.relative(path.posix.dirname(options.rootURL.href), subschemaURL)
-              : subschemaURL;
-          return `external["${relativeURL}"]["${parts.join('"]["')}"]`; // export external ref
-        }
-
-        // References to properties of schemas like `#/components/schemas/Pet/properties/name`
-        // requires the components to be wrapped in a `properties` object. But to keep
-        // backwards compatibility we should instead just remove the `properties` part.
-        // For us to recognize the `properties` part it simply has to be the second last.
-        if (parts[parts.length - 2] === "properties") {
-          parts.splice(parts.length - 2, 1);
-        }
-
-        // scenario 3: transform all $refs pointing back to root schema
-        const [base, ...rest] = parts;
-
-        return `${base}["${rest.join('"]["')}"]`; // transform other $refs to the root schema (including external refs that point back to the root schema)
+        return transformRef(v, subschemaURL);
       });
 
       // use relative keys for external schemas (schemas generated on different machines should have the same namespace)

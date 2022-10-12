@@ -96,6 +96,11 @@ export interface RequestBody {
   };
 }
 
+export interface Discriminator {
+  propertyName: string;
+  mapping: Record<string, string>;
+}
+
 export interface SchemaObject {
   title?: string; // ignored
   description?: string;
@@ -111,6 +116,7 @@ export interface SchemaObject {
   oneOf?: (ReferenceObject | SchemaObject)[]; // V3 ONLY
   anyOf?: (ReferenceObject | SchemaObject)[]; // V3 ONLY
   format?: string; // V3 ONLY
+  discriminator?: Discriminator;
 }
 
 export type SchemaFormatter = (schemaObj: SchemaObject) => string | undefined;
